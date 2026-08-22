@@ -10,31 +10,32 @@ if (!fs.existsSync(dbDir)) {
   fs.mkdirSync(dbDir, { recursive: true });
 }
 
-const dbPath = path.join(dbDir, 'excel_analyst.db');
+const masterDbPath = path.join(dbDir, 'system_master.db');
 
-// Initialize Single SQLite Database Connection in dedicated backend/database/ folder
-const db = new sqlite3.Database(dbPath, (err) => {
+// Initialize Master System SQLite Database Connection
+const db = new sqlite3.Database(masterDbPath, (err) => {
   if (err) {
-    console.error("❌ SQLite Database Connection Error:", err.message);
+    console.error("❌ Master SQLite Database Connection Error:", err.message);
   } else {
-    console.log(`🗄️ Connected to SQLite Database in dedicated folder (${dbPath})`);
+    console.log(`🗄️ Connected to Master System SQLite Database (${masterDbPath})`);
   }
 });
 
 // Initialize Master System Tables
 db.serialize(() => {
-  // 1. Datasets Table
+  // Datasets Metadata Registry
   db.run(`
     CREATE TABLE IF NOT EXISTS datasets (
       filename TEXT PRIMARY KEY,
       original_name TEXT NOT NULL,
       size INTEGER NOT NULL,
       metadata_json TEXT NOT NULL,
+      separate_db_file TEXT NOT NULL,
       uploaded_at INTEGER NOT NULL
     )
   `);
 
-  // 2. Chat History Table
+  // Chat History Table
   db.run(`
     CREATE TABLE IF NOT EXISTS chat_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,28 +53,38 @@ db.serialize(() => {
 });
 
 /**
- * Creates a dedicated, isolated separate SQLite database table for each uploaded dataset/document.
+ * Creates a separate, standalone .db database file for each uploaded dataset/document on disk.
  */
-export function createSeparateDatasetTable(filename, columns = [], rows = []) {
+export function createSeparateDatabaseFile(filename, columns = [], rows = []) {
   return new Promise((resolve, reject) => {
-    const cleanTableName = 'tbl_' + filename.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+    const cleanDbName = filename.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase() + '.db';
+    const separateDbPath = path.join(dbDir, cleanDbName);
     
+    // Create or connect to separate standalone SQLite database file
+    const sepDb = new sqlite3.Database(separateDbPath, (err) => {
+      if (err) return reject(err);
+    });
+
     if (!columns || columns.length === 0) {
-      return resolve({ tableName: cleanTableName, rowCount: 0 });
+      sepDb.close();
+      return resolve({ dbFileName: cleanDbName, dbPath: separateDbPath, rowCount: 0 });
     }
 
     const sanitizedCols = columns.map((c, i) => c ? String(c).replace(/[^a-zA-Z0-9_]/g, '_') : `col_${i}`);
     const colDefs = sanitizedCols.map(c => `"${c}" TEXT`).join(', ');
 
-    db.serialize(() => {
-      db.run(`DROP TABLE IF EXISTS ${cleanTableName}`);
-      db.run(`CREATE TABLE ${cleanTableName} (row_id INTEGER PRIMARY KEY AUTOINCREMENT, ${colDefs})`, (err) => {
-        if (err) return reject(err);
+    sepDb.serialize(() => {
+      sepDb.run(`DROP TABLE IF EXISTS dataset_values`);
+      sepDb.run(`CREATE TABLE dataset_values (row_id INTEGER PRIMARY KEY AUTOINCREMENT, ${colDefs})`, (err) => {
+        if (err) {
+          sepDb.close();
+          return reject(err);
+        }
 
         if (rows && rows.length > 0) {
           const colNames = sanitizedCols.map(c => `"${c}"`).join(', ');
           const placeholders = columns.map(() => '?').join(', ');
-          const stmt = db.prepare(`INSERT INTO ${cleanTableName} (${colNames}) VALUES (${placeholders})`);
+          const stmt = sepDb.prepare(`INSERT INTO dataset_values (${colNames}) VALUES (${placeholders})`);
 
           rows.forEach(row => {
             const vals = columns.map(c => (row[c] !== undefined && row[c] !== null) ? String(row[c]) : '');
@@ -81,12 +92,14 @@ export function createSeparateDatasetTable(filename, columns = [], rows = []) {
           });
           
           stmt.finalize((finalizeErr) => {
+            sepDb.close();
             if (finalizeErr) return reject(finalizeErr);
-            console.log(`🗄️ Successfully created separate database table '${cleanTableName}' with ${rows.length} rows.`);
-            resolve({ tableName: cleanTableName, rowCount: rows.length });
+            console.log(`🗄️ Created standalone database file '${cleanDbName}' with ${rows.length} rows.`);
+            resolve({ dbFileName: cleanDbName, dbPath: separateDbPath, rowCount: rows.length });
           });
         } else {
-          resolve({ tableName: cleanTableName, rowCount: 0 });
+          sepDb.close();
+          resolve({ dbFileName: cleanDbName, dbPath: separateDbPath, rowCount: 0 });
         }
       });
     });
@@ -94,26 +107,26 @@ export function createSeparateDatasetTable(filename, columns = [], rows = []) {
 }
 
 /**
- * Save dataset metadata in SQLite master table
+ * Save dataset metadata in Master SQLite Database
  */
-export function saveDataset(filename, originalName, size, metadata) {
+export function saveDataset(filename, originalName, size, metadata, separateDbFile = '') {
   return new Promise((resolve, reject) => {
     const uploadedAt = Date.now();
     const metadataJson = JSON.stringify(metadata);
 
     db.run(
-      `INSERT OR REPLACE INTO datasets (filename, original_name, size, metadata_json, uploaded_at) VALUES (?, ?, ?, ?, ?)`,
-      [filename, originalName, size, metadataJson, uploadedAt],
+      `INSERT OR REPLACE INTO datasets (filename, original_name, size, metadata_json, separate_db_file, uploaded_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      [filename, originalName, size, metadataJson, separateDbFile, uploadedAt],
       function (err) {
         if (err) return reject(err);
-        resolve({ filename, originalName, size, metadata, uploadedAt });
+        resolve({ filename, originalName, size, metadata, separateDbFile, uploadedAt });
       }
     );
   });
 }
 
 /**
- * Fetch all datasets from SQLite database
+ * Fetch all datasets from Master SQLite database
  */
 export function getDatasets() {
   return new Promise((resolve, reject) => {
@@ -126,8 +139,8 @@ export function getDatasets() {
         size: r.size,
         metadata: JSON.parse(r.metadata_json),
         uploadedAt: r.uploaded_at,
-        separateTableName: 'tbl_' + r.filename.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase(),
-        primaryDatabase: 'SQLite Database (backend/database/excel_analyst.db)'
+        separateDbFile: r.separate_db_file,
+        primaryDatabase: `Standalone SQLite DB (backend/database/${r.separate_db_file})`
       }));
       resolve(datasets);
     });
@@ -135,7 +148,7 @@ export function getDatasets() {
 }
 
 /**
- * Fetch past chat history for a dataset from SQLite database
+ * Fetch past chat history for a dataset from Master SQLite database
  */
 export function getDatasetHistory(filename) {
   return new Promise((resolve, reject) => {
@@ -163,7 +176,7 @@ export function getDatasetHistory(filename) {
 }
 
 /**
- * Save query prompt and AI response to SQLite chat_history table
+ * Save query prompt and AI response to Master SQLite chat_history table
  */
 export function saveQueryHistory(filename, activeSheet, query, textResponse, tableData, tableColumns, hasChart, chartUrl) {
   return new Promise((resolve, reject) => {
