@@ -21,7 +21,7 @@ const db = new sqlite3.Database(dbPath, (err) => {
   }
 });
 
-// Initialize Tables
+// Initialize Master System Tables
 db.serialize(() => {
   // 1. Datasets Table
   db.run(`
@@ -34,18 +34,7 @@ db.serialize(() => {
     )
   `);
 
-  // 2. Dataset Row Records Table (stores full spreadsheet table data for SQL calculations)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS dataset_records (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      filename TEXT NOT NULL,
-      sheet_name TEXT NOT NULL,
-      row_index INTEGER NOT NULL,
-      record_json TEXT NOT NULL
-    )
-  `);
-
-  // 3. Chat History & Analytical Logs Table
+  // 2. Chat History Table
   db.run(`
     CREATE TABLE IF NOT EXISTS chat_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,9 +52,51 @@ db.serialize(() => {
 });
 
 /**
- * Save or update dataset metadata and row records in SQLite
+ * Creates a dedicated, isolated separate SQLite database table for each uploaded dataset/document.
  */
-export function saveDataset(filename, originalName, size, metadata, rows = []) {
+export function createSeparateDatasetTable(filename, columns = [], rows = []) {
+  return new Promise((resolve, reject) => {
+    const cleanTableName = 'tbl_' + filename.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+    
+    if (!columns || columns.length === 0) {
+      return resolve({ tableName: cleanTableName, rowCount: 0 });
+    }
+
+    const sanitizedCols = columns.map((c, i) => c ? String(c).replace(/[^a-zA-Z0-9_]/g, '_') : `col_${i}`);
+    const colDefs = sanitizedCols.map(c => `"${c}" TEXT`).join(', ');
+
+    db.serialize(() => {
+      db.run(`DROP TABLE IF EXISTS ${cleanTableName}`);
+      db.run(`CREATE TABLE ${cleanTableName} (row_id INTEGER PRIMARY KEY AUTOINCREMENT, ${colDefs})`, (err) => {
+        if (err) return reject(err);
+
+        if (rows && rows.length > 0) {
+          const colNames = sanitizedCols.map(c => `"${c}"`).join(', ');
+          const placeholders = columns.map(() => '?').join(', ');
+          const stmt = db.prepare(`INSERT INTO ${cleanTableName} (${colNames}) VALUES (${placeholders})`);
+
+          rows.forEach(row => {
+            const vals = columns.map(c => (row[c] !== undefined && row[c] !== null) ? String(row[c]) : '');
+            stmt.run(vals);
+          });
+          
+          stmt.finalize((finalizeErr) => {
+            if (finalizeErr) return reject(finalizeErr);
+            console.log(`🗄️ Successfully created separate database table '${cleanTableName}' with ${rows.length} rows.`);
+            resolve({ tableName: cleanTableName, rowCount: rows.length });
+          });
+        } else {
+          resolve({ tableName: cleanTableName, rowCount: 0 });
+        }
+      });
+    });
+  });
+}
+
+/**
+ * Save dataset metadata in SQLite master table
+ */
+export function saveDataset(filename, originalName, size, metadata) {
   return new Promise((resolve, reject) => {
     const uploadedAt = Date.now();
     const metadataJson = JSON.stringify(metadata);
@@ -75,18 +106,6 @@ export function saveDataset(filename, originalName, size, metadata, rows = []) {
       [filename, originalName, size, metadataJson, uploadedAt],
       function (err) {
         if (err) return reject(err);
-
-        if (rows && rows.length > 0) {
-          const stmt = db.prepare(
-            `INSERT INTO dataset_records (filename, sheet_name, row_index, record_json) VALUES (?, ?, ?, ?)`
-          );
-          const defaultSheet = metadata.defaultSheet || 'Sheet1';
-          rows.forEach((row, idx) => {
-            stmt.run(filename, defaultSheet, idx, JSON.stringify(row));
-          });
-          stmt.finalize();
-        }
-
         resolve({ filename, originalName, size, metadata, uploadedAt });
       }
     );
@@ -107,6 +126,7 @@ export function getDatasets() {
         size: r.size,
         metadata: JSON.parse(r.metadata_json),
         uploadedAt: r.uploaded_at,
+        separateTableName: 'tbl_' + r.filename.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase(),
         primaryDatabase: 'SQLite Database (backend/database/excel_analyst.db)'
       }));
       resolve(datasets);

@@ -4,7 +4,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { getExcelMetadata, analyzeData } from './utils.js';
-import { saveDataset, getDatasets, getDatasetHistory, saveQueryHistory } from './database.js';
+import { saveDataset, getDatasets, getDatasetHistory, saveQueryHistory, createSeparateDatasetTable } from './database.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -39,7 +39,6 @@ const storage = multer.diskStorage({
   }
 });
 
-// Configure Multer to accept ALL document & data formats
 const ALLOWED_EXTENSIONS = ['.xlsx', '.xls', '.csv', '.pdf', '.docx', '.doc', '.json', '.txt', '.tsv'];
 
 const upload = multer({ 
@@ -60,7 +59,7 @@ app.get('/api/db-status', (req, res) => {
   res.json({
     connected: true,
     isPrimaryDb: true,
-    mode: 'SQLite (Single Unified Database)'
+    mode: 'SQLite (Dedicated Tables per Dataset)'
   });
 });
 
@@ -68,7 +67,7 @@ app.get('/api/firebase-status', (req, res) => {
   res.json({
     connected: true,
     isPrimaryDb: true,
-    mode: 'SQLite (Single Unified Database)'
+    mode: 'SQLite (Dedicated Tables per Dataset)'
   });
 });
 
@@ -109,8 +108,18 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: `Could not parse document: ${metadata.error}` });
     }
 
+    // 1. Save metadata in master table
     await saveDataset(req.file.filename, req.file.originalname, req.file.size, metadata);
-    console.log(`🗄️ Saved document to Single Unified SQLite Database: ${req.file.filename}`);
+    
+    // 2. Create isolated, separate SQL database table for this uploaded file
+    const defaultSheet = metadata.defaultSheet || 'Sheet1';
+    const sheetInfo = metadata.sheets ? metadata.sheets[defaultSheet] : null;
+    let separateTableResult = null;
+    if (sheetInfo && sheetInfo.columns) {
+      separateTableResult = await createSeparateDatasetTable(req.file.filename, sheetInfo.columns, sheetInfo.preview);
+    }
+
+    console.log(`🗄️ Saved dataset and created separate table '${separateTableResult?.tableName}'`);
 
     res.json({
       success: true,
@@ -118,7 +127,8 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
       originalName: req.file.originalname,
       size: req.file.size,
       metadata: metadata,
-      primaryDatabase: 'SQLite (Single Unified Database)'
+      separateTableName: separateTableResult?.tableName,
+      primaryDatabase: 'SQLite (Dedicated Tables per Dataset)'
     });
   } catch (error) {
     console.error("Upload error:", error);
@@ -143,13 +153,21 @@ app.post('/api/load-demo', async (req, res) => {
 
     await saveDataset(demoFileName, 'mock_invoices.xlsx', fs.statSync(filePath).size, metadata);
 
+    const defaultSheet = metadata.defaultSheet || 'Invoices';
+    const sheetInfo = metadata.sheets ? metadata.sheets[defaultSheet] : null;
+    let separateTableResult = null;
+    if (sheetInfo && sheetInfo.columns) {
+      separateTableResult = await createSeparateDatasetTable(demoFileName, sheetInfo.columns, sheetInfo.preview);
+    }
+
     res.json({
       success: true,
       filename: demoFileName,
       originalName: 'mock_invoices.xlsx',
       size: fs.statSync(filePath).size,
       metadata: metadata,
-      primaryDatabase: 'SQLite (Single Unified Database)'
+      separateTableName: separateTableResult?.tableName,
+      primaryDatabase: 'SQLite (Dedicated Tables per Dataset)'
     });
   } catch (error) {
     console.error("Demo load error:", error);
@@ -202,5 +220,5 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`AI Multi-Format Analyst Server running on port ${PORT} with SQLite as Single Unified Database`);
+  console.log(`AI Multi-Format Analyst Server running on port ${PORT} with SQLite (Dedicated Tables per Dataset)`);
 });
