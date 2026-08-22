@@ -1,0 +1,16 @@
+version: 1.0
+runtime: python3
+build:
+  commands:
+    build:
+      - npm ci
+      - pip install pandas numpy matplotlib seaborn openpyxl python-docx pdfplumber pypdf
+run:
+  command: node server.js
+  network:
+    port: "5000"
+  env:
+    - name: NODE_ENV
+      value: production
+    - name: PORT
+      value: "5000"
