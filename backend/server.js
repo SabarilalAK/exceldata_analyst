@@ -9,7 +9,6 @@ import { saveDataset, getDatasets, getDatasetHistory, saveQueryHistory } from '.
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Enable CORS for all routes (Vite frontend on 5173, backend on 5000)
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
@@ -19,20 +18,17 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Setup file paths
 const __dirname = path.resolve();
 const uploadDir = path.join(__dirname, 'uploads');
 const chartsDir = path.join(__dirname, 'charts');
 const tempDir = path.join(__dirname, 'temp');
 
-// Ensure directories exist
 [uploadDir, chartsDir, tempDir].forEach(dir => {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 });
 
-// Configure Multer for uploading sheets
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, uploadDir);
@@ -43,25 +39,23 @@ const storage = multer.diskStorage({
   }
 });
 
+// Configure Multer to accept ALL document & data formats
+const ALLOWED_EXTENSIONS = ['.xlsx', '.xls', '.csv', '.pdf', '.docx', '.doc', '.json', '.txt', '.tsv'];
+
 const upload = multer({ 
   storage: storage,
   fileFilter: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
-    if (ext === '.xlsx' || ext === '.xls' || ext === '.csv') {
+    if (ALLOWED_EXTENSIONS.includes(ext)) {
       cb(null, true);
     } else {
-      cb(new Error('Only Excel (.xlsx, .xls) and CSV (.csv) files are allowed.'));
+      cb(new Error(`Unsupported file type '${ext}'. Supported formats: Excel (.xlsx, .xls), CSV/TSV (.csv, .tsv, .txt), PDF (.pdf), Word (.docx, .doc), and JSON (.json).`));
     }
   }
 });
 
-// Static folder to serve generated chart images
 app.use('/api/charts', express.static(chartsDir));
 
-/**
- * Endpoint: GET /api/db-status
- * Returns connection status and mode of Single Unified SQLite Database.
- */
 app.get('/api/db-status', (req, res) => {
   res.json({
     connected: true,
@@ -70,7 +64,6 @@ app.get('/api/db-status', (req, res) => {
   });
 });
 
-// Alias for backwards compatibility
 app.get('/api/firebase-status', (req, res) => {
   res.json({
     connected: true,
@@ -79,10 +72,6 @@ app.get('/api/firebase-status', (req, res) => {
   });
 });
 
-/**
- * Endpoint: GET /api/datasets
- * Primary Database Query: Reads all dataset documents from SQLite database.
- */
 app.get('/api/datasets', async (req, res) => {
   try {
     const datasets = await getDatasets();
@@ -93,10 +82,6 @@ app.get('/api/datasets', async (req, res) => {
   }
 });
 
-/**
- * Endpoint: GET /api/datasets/:filename/history
- * Primary Database Query: Fetches past chat & analysis history from SQLite database.
- */
 app.get('/api/datasets/:filename/history', async (req, res) => {
   try {
     const { filename } = req.params;
@@ -108,10 +93,6 @@ app.get('/api/datasets/:filename/history', async (req, res) => {
   }
 });
 
-/**
- * Endpoint: POST /api/upload
- * Handles file uploads, extracts dataset metadata, and saves into single SQLite database.
- */
 app.post('/api/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -119,19 +100,17 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     }
     
     const filePath = req.file.path;
-    console.log(`Uploaded file stored at: ${filePath}`);
+    console.log(`Uploaded document stored at: ${filePath}`);
     
-    // Extract metadata
     const metadata = await getExcelMetadata(filePath);
     
     if (metadata.error) {
       fs.unlinkSync(filePath);
-      return res.status(400).json({ error: `Could not parse file: ${metadata.error}` });
+      return res.status(400).json({ error: `Could not parse document: ${metadata.error}` });
     }
 
-    // Save into single SQLite Database `excel_analyst.db`
     await saveDataset(req.file.filename, req.file.originalname, req.file.size, metadata);
-    console.log(`🗄️ Saved dataset to Single Unified SQLite Database: ${req.file.filename}`);
+    console.log(`🗄️ Saved document to Single Unified SQLite Database: ${req.file.filename}`);
 
     res.json({
       success: true,
@@ -147,10 +126,6 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-/**
- * Endpoint: POST /api/load-demo
- * Loads pre-generated mock_invoices.xlsx file directly and saves into single SQLite database.
- */
 app.post('/api/load-demo', async (req, res) => {
   try {
     const demoFileName = 'mock_invoices.xlsx';
@@ -166,9 +141,7 @@ app.post('/api/load-demo', async (req, res) => {
       return res.status(400).json({ error: `Could not parse demo file: ${metadata.error}` });
     }
 
-    // Save into single SQLite Database `excel_analyst.db`
     await saveDataset(demoFileName, 'mock_invoices.xlsx', fs.statSync(filePath).size, metadata);
-    console.log(`🗄️ Registered demo dataset in Single Unified SQLite Database.`);
 
     res.json({
       success: true,
@@ -184,10 +157,6 @@ app.post('/api/load-demo', async (req, res) => {
   }
 });
 
-/**
- * Endpoint: POST /api/query
- * Analyzes spreadsheet and logs query execution history in single SQLite database.
- */
 app.post('/api/query', async (req, res) => {
   const { filename, activeSheet, query, history } = req.body;
   
@@ -197,13 +166,12 @@ app.post('/api/query', async (req, res) => {
   
   const filePath = path.join(uploadDir, filename);
   if (!fs.existsSync(filePath)) {
-    return res.status(404).json({ error: 'Spreadsheet file not found on server. Please upload again.' });
+    return res.status(404).json({ error: 'Document file not found on server. Please upload again.' });
   }
 
   try {
     const analysisResult = await analyzeData(filePath, activeSheet, query, history || []);
     
-    // Save prompt and analysis output into SQLite chat_history table
     try {
       await saveQueryHistory(
         filename,
@@ -215,7 +183,6 @@ app.post('/api/query', async (req, res) => {
         analysisResult.hasChart,
         analysisResult.chartUrl
       );
-      console.log(`🗄️ Saved query result to SQLite Database for file: ${filename}`);
     } catch (dbErr) {
       console.error("SQLite save query error:", dbErr);
     }
@@ -224,18 +191,16 @@ app.post('/api/query', async (req, res) => {
   } catch (error) {
     console.error("Query execution error:", error);
     res.status(500).json({ 
-      error: error.message || 'An error occurred while analyzing the dataset. Please refine your query.' 
+      error: error.message || 'An error occurred while analyzing the document. Please refine your query.' 
     });
   }
 });
 
-// Error handling middleware
 app.use((err, req, res, next) => {
   console.error("Unhandled server error:", err);
   res.status(500).json({ error: err.message || 'Internal server error.' });
 });
 
-// Start the server
 app.listen(PORT, () => {
-  console.log(`AI Excel Analyst Server running on port ${PORT} with SQLite as Single Unified Database`);
+  console.log(`AI Multi-Format Analyst Server running on port ${PORT} with SQLite as Single Unified Database`);
 });

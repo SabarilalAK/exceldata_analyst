@@ -1,6 +1,8 @@
 import React, { useState, useRef } from 'react';
-import { UploadCloud, FileSpreadsheet, Sparkles, Loader2, AlertCircle } from 'lucide-react';
+import { UploadCloud, FileSpreadsheet, Sparkles, Loader2, AlertCircle, FileText } from 'lucide-react';
 import { API_BASE_URL } from '../api';
+
+const ALLOWED_EXTS = ['xlsx', 'xls', 'csv', 'pdf', 'docx', 'doc', 'json', 'txt', 'tsv'];
 
 export default function FileUploader({ onUploadSuccess }) {
   const [isDragActive, setIsDragActive] = useState(false);
@@ -21,10 +23,9 @@ export default function FileUploader({ onUploadSuccess }) {
   const processFile = async (file) => {
     if (!file) return;
     
-    // Check extension
     const ext = file.name.split('.').pop().toLowerCase();
-    if (ext !== 'xlsx' && ext !== 'xls' && ext !== 'csv') {
-      setError("Unsupported file format. Please upload an Excel (.xlsx, .xls) or CSV (.csv) file.");
+    if (!ALLOWED_EXTS.includes(ext)) {
+      setError(`Unsupported file format '.${ext}'. Supported formats: Excel (.xlsx, .xls), CSV/TSV (.csv, .tsv), PDF (.pdf), Word (.docx), and JSON (.json).`);
       return;
     }
 
@@ -42,14 +43,14 @@ export default function FileUploader({ onUploadSuccess }) {
 
       if (!response.ok) {
         const errJson = await response.json();
-        throw new Error(errJson.error || 'Failed to upload spreadsheet.');
+        throw new Error(errJson.error || 'Failed to upload document.');
       }
 
       const data = await response.json();
       onUploadSuccess(data);
     } catch (err) {
       console.error(err);
-      setError(err.message || 'Error uploading file. Make sure the backend server is running.');
+      setError(err.message || 'Error uploading document. Make sure the backend server is running.');
     } finally {
       setLoading(false);
     }
@@ -96,7 +97,7 @@ export default function FileUploader({ onUploadSuccess }) {
       onUploadSuccess(data);
     } catch (err) {
       console.error(err);
-      setError(err.message || 'Could not load demo dataset. Make sure the server generated mock invoices first.');
+      setError(err.message || 'Could not load demo dataset.');
     } finally {
       setLoading(false);
     }
@@ -121,27 +122,27 @@ export default function FileUploader({ onUploadSuccess }) {
           ref={fileInputRef}
           type="file" 
           style={{ display: 'none' }}
-          accept=".xlsx,.xls,.csv"
+          accept=".xlsx,.xls,.csv,.pdf,.docx,.doc,.json,.txt,.tsv"
           onChange={handleChange}
         />
         
         {loading ? (
           <div style={styles.loadingContainer}>
             <Loader2 className="animate-spin" size={48} color="var(--primary)" />
-            <h3 style={styles.loadingText}>Processing Spreadsheet...</h3>
-            <p style={styles.subtext}>Reading sheets, columns, and parsing table schema...</p>
+            <h3 style={styles.loadingText}>Parsing & Processing Document...</h3>
+            <p style={styles.subtext}>Reading tables, columns, and building analytical schema...</p>
           </div>
         ) : (
           <div style={styles.content}>
             <div style={styles.iconCircle}>
               <UploadCloud size={32} color="var(--primary)" />
             </div>
-            <h2 style={styles.title}>AI Excel Data Analyst</h2>
+            <h2 style={styles.title}>AI Universal Document Analyst</h2>
             <p style={styles.subtext}>
-              Drag and drop your spreadsheet here, or{' '}
+              Drag and drop any document here, or{' '}
               <span onClick={onButtonClick} style={styles.browseLink}>browse files</span>
             </p>
-            <p style={styles.formatText}>Supports Excel (.xlsx, .xls) and CSV (.csv) formats</p>
+            <p style={styles.formatText}>Supports Excel (.xlsx), CSV, PDF (.pdf), Word (.docx), JSON, and Text formats</p>
             
             <div style={styles.divider}>
               <span style={styles.dividerLine}></span>

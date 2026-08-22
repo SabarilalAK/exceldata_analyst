@@ -39,21 +39,84 @@ def find_col(df, target_names):
     Finds the first matching column in df (case-insensitive, substring/alias matching).
     """
     cols_lower = {str(c).lower().strip(): c for c in df.columns}
-    # 1. Exact match
     for target in target_names:
         if target.lower() in cols_lower:
             return cols_lower[target.lower()]
-    # 2. Substring match
     for target in target_names:
         for c_lower, orig in cols_lower.items():
             if target.lower() in c_lower:
                 return orig
     return None
 
+def load_any_file_as_df(file_path, sheet_name=None):
+    """
+    Universal multi-format parser for Excel (.xlsx, .xls), CSV (.csv, .tsv, .txt), 
+    JSON (.json), Word Documents (.docx), and PDF files (.pdf).
+    """
+    ext = os.path.splitext(file_path)[1].lower()
+    
+    if ext in ['.xlsx', '.xls']:
+        if sheet_name:
+            return pd.read_excel(file_path, sheet_name=sheet_name)
+        return pd.read_excel(file_path)
+        
+    elif ext in ['.csv', '.tsv', '.txt']:
+        sep = '\t' if ext == '.tsv' else ','
+        try:
+            return pd.read_csv(file_path, sep=sep)
+        except:
+            return pd.read_csv(file_path, sep=r'\s+')
+            
+    elif ext == '.json':
+        return pd.read_json(file_path)
+        
+    elif ext == '.docx':
+        try:
+            import docx
+            doc = docx.Document(file_path)
+            all_tables = []
+            for table in doc.tables:
+                table_data = []
+                for row in table.rows:
+                    table_data.append([cell.text.strip() for cell in row.cells])
+                if len(table_data) > 1:
+                    df_tbl = pd.DataFrame(table_data[1:], columns=table_data[0])
+                    all_tables.append(df_tbl)
+            if all_tables:
+                return pd.concat(all_tables, ignore_index=True)
+            
+            lines = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+            return pd.DataFrame({"Content": lines})
+        except Exception as e:
+            raise ValueError(f"Could not parse Word document: {str(e)}")
+            
+    elif ext == '.pdf':
+        try:
+            import pdfplumber
+            tables = []
+            with pdfplumber.open(file_path) as pdf:
+                for page in pdf.pages:
+                    extracted = page.extract_tables()
+                    for tbl in extracted:
+                        if len(tbl) > 1:
+                            df_tbl = pd.DataFrame(tbl[1:], columns=tbl[0])
+                            tables.append(df_tbl)
+            if tables:
+                return pd.concat(tables, ignore_index=True)
+                
+            lines = []
+            with pdfplumber.open(file_path) as pdf:
+                for page in pdf.pages:
+                    txt = page.extract_text()
+                    if txt:
+                        lines.extend([l.strip() for l in txt.split('\n') if l.strip()])
+            return pd.DataFrame({"Content": lines})
+        except Exception as e:
+            raise ValueError(f"Could not parse PDF document: {str(e)}")
+    else:
+        return pd.read_csv(file_path)
+
 def prepare_dataframe(df):
-    """
-    Normalizes and derives standard columns so fallback analysis works on ANY dataset.
-    """
     df.columns = [str(c).strip() for c in df.columns]
     
     # 1. Customer Name column
@@ -154,16 +217,9 @@ def prepare_dataframe(df):
     return df
 
 def run_analysis(file_path, sheet_name, query, chart_path):
-    # Load dataset
-    if file_path.endswith('.csv'):
-        df = pd.read_csv(file_path)
-    else:
-        df = pd.read_excel(file_path, sheet_name=sheet_name)
-    
-    # Prepare and normalize dataframe columns dynamically
+    df = load_any_file_as_df(file_path, sheet_name)
     df = prepare_dataframe(df)
     
-    # Query parsing (lowercase for matching)
     q = query.lower()
     
     result = {
@@ -176,7 +232,6 @@ def run_analysis(file_path, sheet_name, query, chart_path):
         "error_message": None
     }
     
-    # Helper to save figures safely
     def save_plot(chart_type):
         plt.tight_layout()
         plt.savefig(chart_path, dpi=150, facecolor='#12121e', edgecolor='none')
@@ -200,7 +255,6 @@ def run_analysis(file_path, sheet_name, query, chart_path):
                 
             save_plot("pie")
             
-            # Markdown response
             total = len(df)
             markdown = "### Invoice Status Summary & Distribution\nBreakdown of invoice statuses across the dataset:\n\n"
             tbl_data = []
@@ -227,7 +281,6 @@ def run_analysis(file_path, sheet_name, query, chart_path):
             top_cust = df.groupby('Customer Name')['Invoice Amount'].sum().reset_index()
             top_cust = top_cust.sort_values(by='Invoice Amount', ascending=False).head(top_n)
             
-            # Generate Pie / Donut Chart
             fig, ax = plt.subplots(figsize=(8, 8))
             pie_colors = (COLORS * ((len(top_cust) // len(COLORS)) + 1))[:len(top_cust)]
             ax.pie(top_cust['Invoice Amount'], labels=top_cust['Customer Name'], autopct='%1.1f%%', startangle=90,
@@ -237,7 +290,6 @@ def run_analysis(file_path, sheet_name, query, chart_path):
             
             save_plot("pie")
             
-            # Markdown Response
             markdown = f"### Top {top_n} Customers by Total Invoice Value\nTop customers ranked by cumulative invoice amounts:\n\n"
             tbl_data = []
             tbl_cols = ["Rank", "Customer Name", "Total Invoiced"]
@@ -284,7 +336,6 @@ def run_analysis(file_path, sheet_name, query, chart_path):
             df['Overdue Range'] = df['Overdue Days'].apply(bucket_overdue)
             ranges = df['Overdue Range'].value_counts()
             
-            # Donut chart
             fig, ax = plt.subplots(figsize=(8, 8))
             ax.pie(ranges.values, labels=ranges.index, autopct='%1.1f%%', startangle=90, 
                    colors=COLORS[:len(ranges)], textprops={'color': 'white', 'fontsize': 11},
@@ -395,7 +446,6 @@ def run_analysis(file_path, sheet_name, query, chart_path):
             cat_data = df.groupby(cat_col_name)['Invoice Amount'].sum().reset_index()
             cat_data = cat_data.sort_values(by='Invoice Amount', ascending=False).head(12)
             
-            # Generate Pie / Donut Chart as requested
             fig, ax = plt.subplots(figsize=(8, 8))
             pie_colors = (COLORS * ((len(cat_data) // len(COLORS)) + 1))[:len(cat_data)]
             ax.pie(cat_data['Invoice Amount'], labels=cat_data[cat_col_name].astype(str), autopct='%1.1f%%',
