@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+.env
+.env.local
+
+# Secret files & service account keys
+*firebase-adminsdk*.json
+*service-account*.json
+
+# Backend runtime files
+backend/node_modules/
+frontend/node_modules/
+backend/uploads/*
+!backend/uploads/mock_invoices.xlsx
+backend/charts/*
+!backend/charts/.gitkeep
+backend/temp/*
